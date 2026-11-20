@@ -1793,7 +1793,7 @@ function initRenderer(){
   initPost();
   addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();resizePost();checkRotate()});
 }
-const POSTQ=()=>settings.quality!=='low';
+const POSTQ=()=>settings.quality!=='low'&&!LITE;   /* v67b：スマホでは光のにじみ・影などの後処理をしない */
 const AO_SH={uniforms:{tColor:{value:null},tDepth:{value:null},cameraNear:{value:.05},cameraFar:{value:1000},projInv:{value:new THREE.Matrix4()},proj:{value:new THREE.Matrix4()},res:{value:new THREE.Vector2(1,1)},strength:{value:1.1},radius:{value:.75}},
  vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
  fragmentShader:`#include <packing>
@@ -1833,7 +1833,7 @@ function resizePost(){if(!POST)return;const pr=renderer.getPixelRatio(),w=Math.f
   POST.ao.uniforms.res.value.set(w,h);POST.grade.uniforms.res.value.set(w,h);POST.fxaa.uniforms.resolution.value.set(1/w,1/h)}
 function applyQuality(){
   const hi=POSTQ();
-  renderer.setPixelRatio(Math.min(devicePixelRatio||1,hi?2:1));
+  renderer.setPixelRatio(Math.min(devicePixelRatio||1,hi?2:LITE?.85:1));
   sun.castShadow=hi;WX.flash.castShadow=hi;
   if(hi){renderer.toneMapping=THREE.NoToneMapping;renderer.outputEncoding=THREE.LinearEncoding}else{renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=WX.cur?WX.cur.exp:1;renderer.outputEncoding=THREE.sRGBEncoding}
   camera.far=1000;camera.updateProjectionMatrix();resizePost();
@@ -3946,9 +3946,14 @@ function zvLoad(e){if(ZV.models[e.id])return Promise.resolve(ZV.models[e.id]);if
 function zvPlan(s){const L=window.ZMLIST||[],sh=a=>a.map(x=>[Math.random(),x]).sort((a,b)=>a[0]-b[0]).map(x=>x[1]);
   // v66d（ユーザー指示 2026-11-19）：通常ゾンビは毎ステージ 10種すべて、特殊な種類も全部（ボスはステージ5から）
   const pick=L.filter(e=>!e.types.includes('hero')&&(!e.types.includes('boss')||s>=5||s===0));   /* v66m：主人公の体は別に読む（hero.js） */
+  if(LITE&&ZV.litePlan&&ZV.litePlan.s===s)return ZV.litePlan.p;
+  if(LITE){/* v67b：スマホでは読むゾンビを減らす（普通 5種＋特殊な種類は 1種ずつ＋ボス）。メモリが足りずに落ちるため */
+    const nor=sh(pick.filter(e=>e.types.includes('normal'))).slice(0,5),seen=new Set(),sp=[];for(const e of sh(pick.filter(e=>!e.types.includes('normal')))){const t=e.types.join();if(seen.has(t))continue;seen.add(t);sp.push(e)}ZV.litePlan={s,p:nor.concat(sp)};return ZV.litePlan.p}
   return pick}
-function zvNeed(s){const plan=zvPlan(s);ZV.active=new Set(plan.map(e=>e.id));ZV.left=plan.length;ZV.ready=false;
+function zvNeed(s){const plan=zvPlan(s);ZV.active=new Set(plan.map(e=>e.id));if(LITE)zvDrop(ZV.active);ZV.left=plan.length;ZV.ready=false;
   return Promise.all(plan.map(e=>zvLoad(e).finally(()=>ZV.left--))).then(()=>{ZV.ready=Object.keys(ZV.models).length>0;return ZV.ready})}
+// v67b：使わないゾンビのモデルを消す（スマホ）
+function zvDrop(keep){for(const id of Object.keys(ZV.models)){if(keep.has(id))continue;const m=ZV.models[id];try{const rs=[m.g&&m.g.scene].concat((m.V||[]).map(v=>v&&(v.scene||v.root||v)));for(const r of rs)r&&r.traverse&&r.traverse(o=>{if(o.geometry)o.geometry.dispose();const ms=o.material?(Array.isArray(o.material)?o.material:[o.material]):[];for(const x of ms){x.map&&x.map.dispose();x.dispose()}})}catch(e){}delete ZV.models[id];delete ZV.pend[id];if(ZV.cache)delete ZV.cache[id]}}
 function zvInit(){ZV.pend={};ZV.active=new Set();if(!(window.ZMLIST||[]).length)return;ZV.next=zvNeed(typeof progress!=='undefined'&&progress.stage||1)}   // タイトル画面の間に次のステージの分を読み始める
 function zvCv(img,w,h){const c=cvs(w||img.width,h||img.height),x=c.getContext('2d');x.drawImage(img,0,0,c.width,c.height);return c}
 function zvTex(c,src){const t=new THREE.CanvasTexture(c);t.flipY=false;t.encoding=THREE.sRGBEncoding;t.anisotropy=4;if(src){t.wrapS=src.wrapS;t.wrapT=src.wrapT}return t}
@@ -4710,6 +4715,8 @@ function cityProtoFrom(root){root.updateMatrixWorld(true);const parts=[];root.tr
   const cs=g.attributes.color?g.attributes.color.itemSize:4;
   parts.push({mat:(o.material&&o.material.name)||'vc',p,n:nr,uv,c,cs,idx:g.index?Uint32Array.from(g.index.array):null})});return parts}   /* v67：数の並びは型付き配列で（メモリ半分） */
 function cityName(k){return k.replace(/\|/g,'_').replace(/[\[\]\.:\/]/g,'')}
+// v67b：スマホでは建物を 2つずつ読む（一度に全部読むと、読み込みの途中でメモリが足りなくなる）
+const CLIM={n:0,q:[]};function cityLim(f){const max=LITE?2:99;return new Promise((ok,ng)=>{const run=()=>{CLIM.n++;f().then(ok,ng).finally(()=>{CLIM.n--;const nx=CLIM.q.shift();if(nx)nx()})};if(CLIM.n<max)run();else CLIM.q.push(run)})}
 function cityLoad(){if(CITY.loading||CITY.ready)return;CITY.loading=true;
   const L=new THREE.GLTFLoader();if(window.MeshoptDecoder)L.setMeshoptDecoder(MeshoptDecoder);
   const parse=buf=>new Promise((res,rej)=>L.parse(buf,'',res,rej));
@@ -4718,7 +4725,7 @@ function cityLoad(){if(CITY.loading||CITY.ready)return;CITY.loading=true;
   const one=base=>{const get=(f,j)=>fetch(base+f).then(r=>{if(!r.ok)throw new Error(f+' '+r.status);return j?r.text().then(t=>{const c=t.charCodeAt(0);return c===123||c===91?JSON.parse(t):gunzipBuf(cityB64(t)).then(b=>JSON.parse(new TextDecoder().decode(b)))}):r.text()});   // v44：資料（json）も縮めてあることがある（先頭が { か [ でなければ縮めた物）
     return get('manifest.json',1).then(man=>{if(CITY.only){man=Object.assign({},man,{blds:man.blds.filter(b=>CITY.only.has(b.id)),special:[]})}/* v43：街の自動生成では、その街に出る建物だけ読む */tot+=man.blds.length+(man.special||[]).length+1;
       for(const b of man.blds)CITY.man.blds.push(Object.assign({base},b));for(const b of(man.special||[]))CITY.man.special.push(Object.assign({base},b));
-      const bl=man.blds.concat(man.special||[]).map(b=>Promise.all([get(b.glb).then(t=>gunzipBuf(cityB64(t))).then(parse),get(b.meta,1)]).then(([g,meta])=>{meta._base=base;if(typeof CITY_ROOFCOL!=='undefined'&&CITY_ROOFCOL[b.id]&&meta.col&&!meta._rc){meta._rc=1;for(const c of CITY_ROOFCOL[b.id])meta.col.push([c[0],c[1],c[2],c[3],c[4],c[5],'roof'])}/* v44f（報告2）：塔屋の屋根・庇の上の当たり判定を足す */CITY.blds[b.id]=g;CITY.meta[b.id]=meta;step();return meta}));
+      const bl=man.blds.concat(man.special||[]).map(b=>cityLim(()=>Promise.all([get(b.glb).then(t=>gunzipBuf(cityB64(t))).then(parse),get(b.meta,1)])).then(([g,meta])=>{meta._base=base;if(typeof CITY_ROOFCOL!=='undefined'&&CITY_ROOFCOL[b.id]&&meta.col&&!meta._rc){meta._rc=1;for(const c of CITY_ROOFCOL[b.id])meta.col.push([c[0],c[1],c[2],c[3],c[4],c[5],'roof'])}/* v44f（報告2）：塔屋の屋根・庇の上の当たり判定を足す */CITY.blds[b.id]=g;CITY.meta[b.id]=meta;step();return meta}));
       const setLib=byName=>{CITY.libs[base]=byName;if(base===bases[0])CITY.libNames=byName;step()};
       const lib=Promise.all([furnIndex(),Promise.all(bl)]).then(([ix,metas])=>{const tab=ix&&ix.stages[base];
         if(!tab)return get(man.lib).then(t=>gunzipBuf(cityB64(t))).then(parse).then(g=>{const byName={};g.scene.traverse(o=>{if(o.name)byName[o.name]=byName[o.name]||o});setLib(byName)});/* 束の目録が無いときは、もとの「ステージごとの部品集」を読む */
@@ -4767,7 +4774,7 @@ function cityPlace(id,ox,oz,rot,piv,yo){yo=yo||0;/* v43：yo＝置く高さ（�
 // 遠くの建物の家具は描かない（軽くするため）
 // v67：家具の形を作る（1コマにかける時間は合わせて 6ms まで。作った形の JS 側の配列は GPU へ送った後に捨てる）
 const CF={t0:0};function cfFree(g,keep){g.traverse(o=>{if(o.geometry&&!(keep&&o.material&&keep.test(o.material.name||'')))for(const a of Object.values(o.geometry.attributes).concat(o.geometry.index?[o.geometry.index]:[])){const t=a.isInterleavedBufferAttribute?a.data:a;if(t&&t.onUpload)t.onUpload(function(){this.array=null})}})}
-function cfBuild(meta,list){const g=cityFurn(meta,list);cfFree(g);return g}
+function cfBuild(meta,list){const g=cityFurn(meta,list);cfFree(g);if(LITE)CITY.protos={};return g}   /* v67b：スマホでは部品の写しを持ち続けない（次に作る時にまた取り出す） */
 function cfDrop(g){g.traverse(o=>{if(o.geometry)o.geometry.dispose()});if(g.parent)g.parent.remove(g)}
 function cityUpdate(){if(!W||!W.city)return;const t0=performance.now(),busy=()=>performance.now()-t0>(G.state==='play'?6:400);
   for(const b of W.city){const d=Math.hypot(P.x-b.cx,P.z-b.cz)-b.rad;b.grp.visible=d<420;
@@ -6811,7 +6818,7 @@ function genTownWorld(P,opt){opt=opt||{};const L=P.L,S=P.S,Y=TW.Y,SW=TW.SW;dispo
       for(const c of e.col||[]){const xs=[],ys=[];for(const[lx,ly]of[[c[0],c[1]],[c[3],c[1]],[c[0],c[4]],[c[3],c[4]]]){const ox=e.origin==='center'?lx:lx,oy=e.origin==='center'?ly:ly;xs.push(p[1]+ox*ca-oy*sa);ys.push(p[2]+ox*sa+oy*ca)}
         col.push([Math.min(...xs),Math.min(...ys),c[2]+p[3],Math.max(...xs),Math.max(...ys),c[5]+p[3],'furn'])}}
     CITY.meta._townprops={id:'_townprops',name:'街の小物',bb:[-S,S,-S,S],levels:[{f:0,ceil:12,top:20}],col,place:L.place,chunk:30,_base:'city4/',rooms:[],tests:{doors:[],stairs:[]}};CITY.blds._townprops={scene:new THREE.Group()};
-    const rec=cityPlace('_townprops',0,0,0,[0,0],0);W.foot.pop();rec.props=true;rec.far=210}   /* v44f（報告10）：見える範囲を広く（霧も遠くへ） */
+    const rec=cityPlace('_townprops',0,0,0,[0,0],0);W.foot.pop();rec.props=true;rec.far=LITE?100:210}   /* v44f（報告10）：見える範囲を広く（霧も遠くへ） */
   // 隔離壁と、壁の外の風景（city6/）。当たり判定は見た目どおり（足もとの広い所と、板）
   for(const[id,list,far,ch]of[['_townwall',L.wall,380,40],['_townfar',L.far,900,80]]){CITY.meta[id]={id,name:id,bb:[-S,S,-S,S],levels:[{f:0,ceil:12,top:60}],col:[],place:list,chunk:ch,_base:'city6/',rooms:[],tests:{doors:[],stairs:[]}};CITY.blds[id]={scene:new THREE.Group()};
     const rec=cityPlace(id,0,0,0,[0,0],0);W.foot.pop();rec.props=true;rec.far=far}
