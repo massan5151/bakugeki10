@@ -1779,7 +1779,7 @@ function setWeather(kind){const w=WEATHERS[kind];WX.cur=w;WX.kind=kind;
   applyQuality();
 }
 function initRenderer(){
-  renderer=new THREE.WebGLRenderer({canvas:$('gl'),antialias:settings.quality==='low',powerPreference:'high-performance',stencil:false});
+  renderer=new THREE.WebGLRenderer({canvas:$('gl'),antialias:settings.quality==='low'&&!LITE,powerPreference:'high-performance',stencil:false,logarithmicDepthBuffer:LITE});   /* v67c：iPhone は奥行きの細かさが足りず、遠くのビルや地面が透けた。スマホでは奥行きの記録のしかたを変える */
   renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.shadowMap.enabled=true;
   scene=new THREE.Scene();scene.fog=new THREE.Fog(0x999999,30,230);
   camera=new THREE.PerspectiveCamera(72,innerWidth/innerHeight,0.05,1000);camera.rotation.order='YXZ';scene.add(camera);
@@ -1836,7 +1836,7 @@ function applyQuality(){
   renderer.setPixelRatio(Math.min(devicePixelRatio||1,hi?2:LITE?.85:1));
   sun.castShadow=hi;WX.flash.castShadow=hi;
   if(hi){renderer.toneMapping=THREE.NoToneMapping;renderer.outputEncoding=THREE.LinearEncoding}else{renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=WX.cur?WX.cur.exp:1;renderer.outputEncoding=THREE.sRGBEncoding}
-  camera.far=1000;camera.updateProjectionMatrix();resizePost();
+  camera.far=LITE?480:1000;camera.updateProjectionMatrix();resizePost();
   scene.traverse(o=>{if(o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.needsUpdate=true)}});
 }
 const LOD_D=()=>settings.quality!=='low'?22:13;
@@ -4776,8 +4776,8 @@ function cityPlace(id,ox,oz,rot,piv,yo){yo=yo||0;/* v43：yo＝置く高さ（�
 const CF={t0:0};function cfFree(g,keep){g.traverse(o=>{if(o.geometry&&!(keep&&o.material&&keep.test(o.material.name||'')))for(const a of Object.values(o.geometry.attributes).concat(o.geometry.index?[o.geometry.index]:[])){const t=a.isInterleavedBufferAttribute?a.data:a;if(t&&t.onUpload)t.onUpload(function(){this.array=null})}})}
 function cfBuild(meta,list){const g=cityFurn(meta,list);cfFree(g);if(LITE)CITY.protos={};return g}   /* v67b：スマホでは部品の写しを持ち続けない（次に作る時にまた取り出す） */
 function cfDrop(g){g.traverse(o=>{if(o.geometry)o.geometry.dispose()});if(g.parent)g.parent.remove(g)}
-function cityUpdate(){if(!W||!W.city)return;const t0=performance.now(),busy=()=>performance.now()-t0>(G.state==='play'?6:400);
-  for(const b of W.city){const d=Math.hypot(P.x-b.cx,P.z-b.cz)-b.rad;b.grp.visible=d<420;
+function cityUpdate(){if(!W||!W.city)return;const t0=performance.now(),busy=()=>!CITY.ready||performance.now()-t0>(G.state==='play'?6:400);   /* 次の街を読み込み中（部品集が空）の間は作らない */
+  for(const b of W.city){const d=Math.hypot(P.x-b.cx,P.z-b.cz)-b.rad;b.grp.visible=d<(LITE&&!b.props?260:420);
   if(b.chunks){const lv=b.meta.levels;let pl=0;for(let i=0;i<lv.length;i++)if(P.y>=lv[i].f-.8)pl=i;const far=b.far||(LITE?45:70);
     for(const c of b.chunks){const dd=Math.hypot(P.x-c.x,P.z-c.z),dl=Math.abs(c.li-pl),want=c.out?dd<far:(dl===0&&dd<far)||(dl===1&&dd<(LITE?28:40))||(dl===2&&dd<(LITE?0:22));
       if(want&&!c.g&&!busy()){c.g=cfBuild(b.meta,c.list);b.furn.add(c.g)}
