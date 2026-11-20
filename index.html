@@ -1678,6 +1678,19 @@ function bindUI(){const sel=$('iStage');{const o=document.createElement('option'
   const sn=$('iSens');sn.value=settings.sens;sn.addEventListener('input',()=>{settings.sens=+sn.value;store.set('settings',settings)})}
 function boot(){if(!window.THREE){$('loading').hidden=false;$('loading').textContent='3D表示の読み込みに失敗しました。通信を確認して再読み込みしてください';return}
   initRenderer();buildTextures();buildTextures3();buildMaterials();buildMat4();humanInit();zvInit();houseInit();setWeather('clear');buildViewModel();bindUI();setupInput();toTitle();frame()}
+/* v67（ユーザー報告 2026-11-20「スマホで出撃すると 90% で画面が白くなりガレージに戻る」）
+   原因：町を作るとメモリを約 2GB 使っていて、スマホのブラウザが落ちて読み直していた。
+   LITE（スマホ・メモリの少ない端末・?lite）のとき：
+   ・読み込んだ画像を 512 ピクセル（空の写真は 1024）までに縮めてから GPU へ送る（画像のメモリが 1/4 以下に） */
+const LITE=/[?&]lite/.test(location.search)||(typeof IS_TOUCH!=='undefined'&&IS_TOUCH)||(navigator.deviceMemory>0&&navigator.deviceMemory<=4);
+if(LITE){const D=Object.getOwnPropertyDescriptor(THREE.Texture.prototype,'needsUpdate');
+  Object.defineProperty(THREE.Texture.prototype,'needsUpdate',{configurable:true,get:D&&D.get,set(v){
+    const ud=this.userData||(this.userData={});if(v===true&&!ud.liteDone){const im=this.image;
+      if(im&&(im instanceof HTMLImageElement||(typeof ImageBitmap!=='undefined'&&im instanceof ImageBitmap))){const w=im.naturalWidth||im.width,h=im.naturalHeight||im.height,lim=ud.liteMax||(w>3000?1024:512);
+        if(w>lim||h>lim){const k=lim/Math.max(w,h),c=document.createElement('canvas');c.width=Math.max(1,Math.round(w*k));c.height=Math.max(1,Math.round(h*k));c.getContext('2d').drawImage(im,0,0,c.width,c.height);this.image=c;try{im.close&&im.close()}catch(e){}}
+        ud.liteDone=1}}
+    if(D&&D.set)D.set.call(this,v);else if(v===true)this.version++}})}
+
 /* v66u：空の写真（Poly Haven・CC0）。v66v：8K の HDR の上半分（真上〜地平線の5°下）を 8192×2161 にして、左右 2枚の JPEG（sky/<名前>_0・_1）。u＝写真の中の太陽の横の位置 */
 const SKYIMG={
  day:{u:0.595,e:47.9,hz:'#828590'},
@@ -1771,7 +1784,7 @@ function initRenderer(){
   scene=new THREE.Scene();scene.fog=new THREE.Fog(0x999999,30,230);
   camera=new THREE.PerspectiveCamera(72,innerWidth/innerHeight,0.05,1000);camera.rotation.order='YXZ';scene.add(camera);
   hemi=new THREE.HemisphereLight(0xffffff,0x444444,.5);scene.add(hemi);
-  sun=new THREE.DirectionalLight(0xffffff,3);sun.shadow.mapSize.set(4096,4096);const sc=sun.shadow.camera;sc.left=-62;sc.right=62;sc.top=62;sc.bottom=-62;sc.near=1;sc.far=420;sun.shadow.bias=-0.00035;sun.shadow.normalBias=.035;sun.shadow.radius=2.5;
+  sun=new THREE.DirectionalLight(0xffffff,3);sun.shadow.mapSize.set(LITE?2048:4096,LITE?2048:4096);const sc=sun.shadow.camera;sc.left=-62;sc.right=62;sc.top=62;sc.bottom=-62;sc.near=1;sc.far=420;sun.shadow.bias=-0.00035;sun.shadow.normalBias=.035;sun.shadow.radius=2.5;
   scene.add(sun);scene.add(sun.target);
   buildSkyObjects();
   const n=420,pa=new Float32Array(n*3);for(let i=0;i<n;i++){pa[i*3]=rrr(-40,40);pa[i*3+1]=rrr(0,25);pa[i*3+2]=rrr(-40,40)}
@@ -4549,7 +4562,13 @@ const CITY_OUT=/^(g_grass|g_gravel_gr|g_gravel|g_soil|siding|roof|conc|frp|tile_
 const FURNSET={idx:null,b:{}};
 function furnIndex(){return FURNSET.idx||(FURNSET.idx=fetch('furn/index.json').then(r=>r.ok?r.json():null).catch(()=>null))}
 function furnBundle(i,nm,parse){return FURNSET.b[i]||(FURNSET.b[i]=fetch('furn/'+nm+'.txt').then(r=>{if(!r.ok)throw new Error('furn/'+nm+' '+r.status);return r.text()}).then(t=>gunzipBuf(cityB64(t))).then(parse).then(g=>{const by={};g.scene.traverse(o=>{if(o.name)by[o.name]=by[o.name]||o});return by}))}
-function citySetBase(b){if(CITY.base===b)return;FURNSET.b={};Object.assign(CITY,{ready:false,err:null,loading:false,prog:0,protos:{},blds:{},meta:{},mats:{},tex:{},base:b,man:null,libNames:null,libs:{},only:null,extra:null,townKey:null})}
+// v67：別の街を読む前に、前の街の形・材質・画像を GPU から消す（消さないとステージごとにたまり、スマホで落ちる）
+function cityPurge(){try{const gs=new Set(),ts=new Set();const walk=r=>r&&r.traverse&&r.traverse(o=>{if(o.geometry)gs.add(o.geometry)});
+  for(const k in CITY.blds||{})walk(CITY.blds[k].scene);for(const k in CITY.libs||{}){const L=CITY.libs[k];if(L&&L.traverse)walk(L);else if(L)for(const n in L)walk(L[n])}
+  for(const n in CITY.libNames||{})walk(CITY.libNames[n]);for(const g of gs)g.dispose();
+  for(const k in CITY.mats||{}){const m=CITY.mats[k];for(const t of['map','emissiveMap','normalMap','roughnessMap'])if(m[t])ts.add(m[t]);if(m.userData&&m.userData.nt)ts.add(m.userData.nt);m.dispose()}
+  for(const k in CITY.tex||{}){const t=CITY.tex[k];if(t&&t.isTexture)ts.add(t)}for(const t of ts)t.dispose()}catch(e){console.warn('cityPurge',e)}}
+function citySetBase(b){if(CITY.base===b)return;cityPurge();FURNSET.b={};Object.assign(CITY,{ready:false,err:null,loading:false,prog:0,protos:{},blds:{},meta:{},mats:{},tex:{},base:b,man:null,libNames:null,libs:{},only:null,extra:null,townKey:null})}
 function cityB64(t){const bin=atob(t.trim()),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u.buffer}
 /* v44g：公開用のフォルダでは、絵を 1つずつのファイルではなく、いくつかの束 tex/t<番号>.txt（名前→絵の中身）にまとめてある（公開できるファイルの数の上限 511 のため）。束の目録 tex/index.json がなければ、1つずつの絵 tex/<名前>.jpg を読む */
 const TEXB={idx:null,b:{}};function texIndex(){return TEXB.idx||(TEXB.idx=fetch('tex/index.json').then(r=>r.ok?r.json():null).catch(()=>null))}
@@ -4689,7 +4708,7 @@ function cityProtoFrom(root){root.updateMatrixWorld(true);const parts=[];root.tr
   const v=new THREE.Vector3();for(let i=0;i<p.length;i+=3){v.set(p[i],p[i+1],p[i+2]).applyMatrix4(M);p[i]=v.x;p[i+1]=v.y;p[i+2]=v.z}
   if(nr)for(let i=0;i<nr.length;i+=3){v.set(nr[i],nr[i+1],nr[i+2]).applyMatrix3(NM).normalize();nr[i]=v.x;nr[i+1]=v.y;nr[i+2]=v.z}
   const cs=g.attributes.color?g.attributes.color.itemSize:4;
-  parts.push({mat:(o.material&&o.material.name)||'vc',p,n:nr,uv,c,cs,idx:g.index?Array.from(g.index.array):null})});return parts}
+  parts.push({mat:(o.material&&o.material.name)||'vc',p,n:nr,uv,c,cs,idx:g.index?Uint32Array.from(g.index.array):null})});return parts}   /* v67：数の並びは型付き配列で（メモリ半分） */
 function cityName(k){return k.replace(/\|/g,'_').replace(/[\[\]\.:\/]/g,'')}
 function cityLoad(){if(CITY.loading||CITY.ready)return;CITY.loading=true;
   const L=new THREE.GLTFLoader();if(window.MeshoptDecoder)L.setMeshoptDecoder(MeshoptDecoder);
@@ -4728,14 +4747,14 @@ function cityFurn(meta,list){const acc={};const M=new THREE.Matrix4(),R=new THRE
   return grp}
 // 建物を置く：Blender座標(x,y,z) → ゲーム座標(x, z, -y)。中心を(ox,oz)に、rot は90度単位（正面＝Blenderの -y 側が向く方角：0=-z,1=-x... ）
 function cityPlace(id,ox,oz,rot,piv,yo){yo=yo||0;/* v43：yo＝置く高さ（街の敷地は道路より一段高い） */const meta=CITY.meta[id],g=CITY.blds[id];const bb=meta.bb,cx=piv?piv[0]:(bb[0]+bb[1])/2,cy=piv?piv[1]:(bb[2]+bb[3])/2;
-  cityIndoorShell(id);const grp=new THREE.Group();const s=g.scene.clone(true);s.traverse(o=>{if(o.isMesh){const mm=Array.isArray(o.material)?o.material:[o.material];o.material=Array.isArray(o.material)?mm.map(x=>cityMat(x.name)):cityMat(mm[0].name);o.castShadow=!(o.material.name==='glass'||o.material.name==='light');o.receiveShadow=true;o.userData.shared=true}});
+  cityIndoorShell(id);if(!g._freed){g._freed=1;cfFree(g.scene,/^(glass|light|light_w)$/)}   /* ガラスと照明は夜の明かり（lmap.js）が後で読むので残す */const grp=new THREE.Group();const s=g.scene.clone(true);s.traverse(o=>{if(o.isMesh){const mm=Array.isArray(o.material)?o.material:[o.material];o.material=Array.isArray(o.material)?mm.map(x=>cityMat(x.name)):cityMat(mm[0].name);o.castShadow=!(o.material.name==='glass'||o.material.name==='light');o.receiveShadow=true;o.userData.shared=true}});
   grp.add(s);let fg,chunks=null;
   if(meta.chunk){// 大きな建物：家具を「階×区画」ごとに分け、近くの階・区画だけ描く
     const by={},lv=meta.levels;fg=new THREE.Group();chunks=[];
     for(const p of meta.place){let li=0;for(let i=0;i<lv.length;i++)if(p[3]>=lv[i].f-.6)li=i;const out=li===0&&p[5]===0;   // v44k：敷地（地面の階の屋外）の木・ベンチなどは、上の階から見下ろしても消さない
       const k=(out?'o':li)+'_'+Math.floor(p[1]/meta.chunk)+'_'+Math.floor(p[2]/meta.chunk);(by[k]=by[k]||{li,out,x:0,y:0,n:0,list:[]}).list.push(p);by[k].x+=p[1];by[k].y+=p[2];by[k].n++}
-    for(const k in by){const c=by[k];const g=cityFurn(meta,c.list);fg.add(g);chunks.push({g,li:c.li,out:c.out,bx:c.x/c.n,by:c.y/c.n})}}
-  else fg=cityFurn(meta);grp.add(fg);
+    for(const k in by){const c=by[k];chunks.push({g:null,list:c.list,li:c.li,out:c.out,bx:c.x/c.n,by:c.y/c.n})}}   /* v67：家具は近づいた時に作る（cityUpdate） */
+  else{fg=new THREE.Group();fg.userData.lazy=1}grp.add(fg);
   const th=rot*Math.PI/2;grp.rotation.y=th;const c=Math.cos(th),sn=Math.sin(th);
   // ローカル(gx,gz)=(x-cx, -(y-cy)) を回して (ox,oz) へ
   const T=(x,y)=>{const gx=x-cx,gz=-(y-cy);return[ox+gx*c+gz*sn,oz-gx*sn+gz*c]};
@@ -4746,10 +4765,18 @@ function cityPlace(id,ox,oz,rot,piv,yo){yo=yo||0;/* v43：yo＝置く高さ（�
   if(chunks)for(const c of chunks){const w=T(c.bx,c.by);c.x=w[0];c.z=w[1]}
   const rec={id,grp,furn:fg,foot:f,T,chunks,meta,yo,rot,cx:(r[0]+r[2])/2,cz:(r[1]+r[3])/2,rad:Math.hypot(r[2]-r[0],r[3]-r[1])/2};(W.city||(W.city=[])).push(rec);return rec}
 // 遠くの建物の家具は描かない（軽くするため）
-function cityUpdate(){if(!W||!W.city)return;for(const b of W.city){const d=Math.hypot(P.x-b.cx,P.z-b.cz)-b.rad;b.grp.visible=d<420;
-  if(b.chunks){const lv=b.meta.levels;let pl=0;for(let i=0;i<lv.length;i++)if(P.y>=lv[i].f-.8)pl=i;
-    for(const c of b.chunks){const dd=Math.hypot(P.x-c.x,P.z-c.z),dl=Math.abs(c.li-pl);c.g.visible=c.out?dd<(b.far||70):(dl===0&&dd<(b.far||70))||(dl===1&&dd<40)||(dl===2&&dd<22)}}
-  else b.furn.visible=d<60}}
+// v67：家具の形を作る（1コマにかける時間は合わせて 6ms まで。作った形の JS 側の配列は GPU へ送った後に捨てる）
+const CF={t0:0};function cfFree(g,keep){g.traverse(o=>{if(o.geometry&&!(keep&&o.material&&keep.test(o.material.name||'')))for(const a of Object.values(o.geometry.attributes).concat(o.geometry.index?[o.geometry.index]:[])){const t=a.isInterleavedBufferAttribute?a.data:a;if(t&&t.onUpload)t.onUpload(function(){this.array=null})}})}
+function cfBuild(meta,list){const g=cityFurn(meta,list);cfFree(g);return g}
+function cfDrop(g){g.traverse(o=>{if(o.geometry)o.geometry.dispose()});if(g.parent)g.parent.remove(g)}
+function cityUpdate(){if(!W||!W.city)return;const t0=performance.now(),busy=()=>performance.now()-t0>(G.state==='play'?6:400);
+  for(const b of W.city){const d=Math.hypot(P.x-b.cx,P.z-b.cz)-b.rad;b.grp.visible=d<420;
+  if(b.chunks){const lv=b.meta.levels;let pl=0;for(let i=0;i<lv.length;i++)if(P.y>=lv[i].f-.8)pl=i;const far=b.far||(LITE?45:70);
+    for(const c of b.chunks){const dd=Math.hypot(P.x-c.x,P.z-c.z),dl=Math.abs(c.li-pl),want=c.out?dd<far:(dl===0&&dd<far)||(dl===1&&dd<(LITE?28:40))||(dl===2&&dd<(LITE?0:22));
+      if(want&&!c.g&&!busy()){c.g=cfBuild(b.meta,c.list);b.furn.add(c.g)}
+      if(c.g){c.g.visible=want;if(!want&&far<200&&(dd>far*1.6+30||dl>3)){cfDrop(c.g);c.g=null}}}}   // 遠くの家具は捨てる（遠景の建物は捨てない）
+  else{const want=d<(LITE?40:60);if(want&&b.furn.userData.lazy&&!busy()){b.furn.userData.lazy=0;b.furn.add(cfBuild(b.meta))}
+    b.furn.visible=want;if(d>160&&!b.furn.userData.lazy&&b.furn.children.length){for(const k of b.furn.children.slice())cfDrop(k);b.furn.userData.lazy=1}}}}
 function inCity(x,z){if(!W||!W.city)return false;for(const f of W.foot)if(f.cid&&x>f.x0&&x<f.x1&&z>f.z0&&z<f.z1)return true;return false}
 // 建物＋外構（駐車場・非常階段・渡り廊下など）を含めた範囲
 function cityExt(m){const bb=(m.bbx||m.bb).slice();for(const c of m.col){bb[0]=Math.min(bb[0],c[0]);bb[1]=Math.max(bb[1],c[3]);bb[2]=Math.min(bb[2],c[1]);bb[3]=Math.max(bb[3],c[4])}return[bb[0]-.5,bb[1]+.5,bb[2]-.5,bb[3]+.5]}
@@ -5521,7 +5548,7 @@ const MALL_WN=['l_qwall|11.00|1.60|0','l_qwall|11.00|1.60|1','l_qwall|11.00|1.60
   'l_far|22.00|16.00|0','l_far|26.00|20.00|1','l_far|40.00|13.00|2','l_far|22.00|22.00|3','l_far|34.00|16.00|4','l_far|36.00|24.00|5','l_far|18.00|16.00|6','l_far|15.00|15.00|7','l_far|30.00|26.00|8','l_far|34.00|20.00|9','l_far|28.00|14.00|10','l_far|20.00|20.00|11','l_far|44.00|26.00|12','l_far|30.00|24.00|13','l_far|16.00|16.00|14'];
 const MALL_PN=['l_pole|0.60|0.60|0','l_pole|0.60|0.60|1','l_pole|0.60|0.60|2','l_pole|0.60|0.60|3','l_wires|25.00|1.20|0','l_lamp|0.50|0.50|0','l_guardrail|4.00|0.30|0'];
 function mallReady(cb){const key='mall#v66g';
-  if(CITY.townKey!==key){FURNSET.b={};Object.assign(CITY,{ready:false,err:null,loading:false,prog:0,protos:{},blds:{},meta:{},mats:{},tex:{},base:MALL2.base+'+city4/+city6/',man:null,libNames:null,libs:{},townKey:key});CITY.only=new Set(['mall2']);CITY.extra={'city4/':MALL_PN,'city6/':MALL_WN}}
+  if(CITY.townKey!==key){if(typeof cityPurge==='function')cityPurge();FURNSET.b={};Object.assign(CITY,{ready:false,err:null,loading:false,prog:0,protos:{},blds:{},meta:{},mats:{},tex:{},base:MALL2.base+'+city4/+city6/',man:null,libNames:null,libs:{},townKey:key});CITY.only=new Set(['mall2']);CITY.extra={'city4/':MALL_PN,'city6/':MALL_WN}}
   if(CITY.ready){cb();return}cityLoad();
   if(CITY.err){$('loading').textContent='モールのデータの読み込みに失敗しました：'+CITY.err.message;return}
   $('loading').textContent='ショッピングモールを読み込み中… '+Math.round(CITY.prog*100)+'%';setTimeout(()=>mallReady(cb),250)}
@@ -6700,7 +6727,7 @@ function twWall45(P,L,WL,FL,h){const{R,rr,ri,pick,Y}=h,PI=Math.PI,O=P.ol,e=P.exi
   // v66x（ユーザー指示 2026-11-20「遠景の密度が薄い。路地を引いて隙間なく詰める。10列まで」）：
   //   壁の外を、路地（幅 6m）で区切った街区に分け、街区の中に建物をすき間なく（1m 空け）詰める。壁から約 260m（建物 10列ぶん）まで。
   //   近い所は低い家・公園も多め、遠い所はビル多め（低い物は手前の建物にかくれて見えないため）
-  {const ALL=FAR.concat(LOW),AL=6,BW=46,M=9,DMAX=262,X0=bb.x0-M,X1=bb.x1+M,Y0=bb.y0-M,Y1=bb.y1+M;
+  {const ALL=FAR.concat(LOW),AL=6,BW=46,M=9,DMAX=LITE?150:262,X0=bb.x0-M,X1=bb.x1+M,Y0=bb.y0-M,Y1=bb.y1+M;
    const lines=(a,b)=>{const xs=[];for(let x=a-DMAX;x<a;x+=BW)xs.push(x);xs.push(a);const n=Math.max(1,Math.round((b-a)/BW));for(let t=1;t<n;t++)xs.push(a+(b-a)*t/n);xs.push(b);for(let x=b+BW;x<=b+DMAX;x+=BW)xs.push(x);if(xs[xs.length-1]<b+DMAX)xs.push(b+DMAX);return xs.sort((p,q)=>p-q)};
    const XS=lines(X0,X1),YS=lines(Y0,Y1),cellsDone=[];
    const dist=q=>Math.max(0,X0-q.x1,q.x0-X1,Y0-q.y1,q.y0-Y1);
@@ -6727,7 +6754,7 @@ function twWall45(P,L,WL,FL,h){const{R,rr,ri,pick,Y}=h,PI=Math.PI,O=P.ol,e=P.exi
      for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){if(occ[j*nx+i])continue;
        let w=1;while(i+w<nx&&!occ[j*nx+i+w]&&w<12)w++;let hh=1;while(j+hh<ny&&hh<12){let ok=true;for(let a=0;a<w;a++)if(occ[(j+hh)*nx+i+a]){ok=false;break}if(!ok)break;hh++}
        for(let b=0;b<hh;b++)for(let a=0;a<w;a++)occ[(j+b)*nx+i+a]=1;
-       if(w*hh<4)continue;const q={x0:cell.x0+i*G2+.4,x1:cell.x0+(i+w)*G2-.4,y0:cell.y0+j*G2+.4,y1:cell.y0+(j+hh)*G2-.4},dc=dist(q);
+       if(w*hh<4)continue;if(LITE&&dist({x0:cell.x0+i*G2,x1:cell.x0+(i+w)*G2,y0:cell.y0+j*G2,y1:cell.y0+(j+hh)*G2})>90)continue;const q={x0:cell.x0+i*G2+.4,x1:cell.x0+(i+w)*G2-.4,y0:cell.y0+j*G2+.4,y1:cell.y0+(j+hh)*G2-.4},dc=dist(q);
        const big=Math.min(q.x1-q.x0,q.y1-q.y0),hmax=dc<40?15:dc<110?30:45,floors=Math.max(2,Math.min(Math.round(hmax/3),Math.round((3+R()*R()*hmax*.9)/3)+(big<6?0:1)));
        const tex=floors<=3&&big>14?'far_d':pick(['far_a','far_b','far_c','far_e','far_f','far_g']);L.fill.push([q.x0,q.y0,q.x1,q.y1,floors*3,tex]);farR.push(q)}}}
   // へこんだ所（外周を囲む四角の中で、街の外）：外周から 13m 以上はなれていれば、遠景の建物を詰める
@@ -6743,14 +6770,14 @@ function twFill(list){const by={},roof={p:[],n:[],c:[]};
     const c=.33+Math.random()*.08,top=(yy,a,b,cc,dd)=>{roof.p.push(a,yy,dd,cc,yy,dd,cc,yy,b,a,yy,dd,cc,yy,b,a,yy,b);for(let k=0;k<6;k++){roof.n.push(0,1,0);roof.c.push(c,c,c*.98)}};top(h,x0,z0,x1,z1);
     const pw=(ax,az,bx,bz,nx,nz)=>{roof.p.push(ax,h,az,bx,h,bz,bx,h+.8,bz,ax,h,az,bx,h+.8,bz,ax,h+.8,az);for(let k=0;k<6;k++){roof.n.push(nx,0,nz);roof.c.push(c*.9,c*.9,c*.88)}};
     pw(x0,z1,x1,z1,0,1);pw(x1,z0,x0,z0,0,-1);pw(x1,z1,x1,z0,1,0);pw(x0,z0,x0,z1,-1,0)}
-  const add=(geo,mat)=>{const m=new THREE.Mesh(geo,mat);m.castShadow=false;m.receiveShadow=true;m.userData.ownMat=false;W.group.add(m)};
+  const add=(geo,mat)=>{const m=new THREE.Mesh(geo,mat);m.castShadow=false;m.receiveShadow=true;m.userData.ownMat=false;W.group.add(m);if(typeof cfFree==='function')cfFree(m)};
   for(const t in by){const g=new THREE.BufferGeometry(),d=by[t];g.setAttribute('position',new THREE.Float32BufferAttribute(d.p,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(d.n,3));g.setAttribute('uv',new THREE.Float32BufferAttribute(d.u,2));g.computeBoundingSphere();add(g,cityMat(t))}
   const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(roof.p,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(roof.n,3));g.setAttribute('color',new THREE.Float32BufferAttribute(roof.c,3));g.computeBoundingSphere();add(g,cityMat('vc'))}
 function twLib(){return TW.lib||(TW.lib=fetch('city4/landlib.json').then(r=>r.ok?r.json():{}).catch(()=>({})))}
 function townIds(P,L){const ids=new Set();for(const it of P.items){ids.add(it.id);const c=TOWN_CAT.find(c=>c.id===it.id);for(const a of(c&&c.ann)||[])ids.add(a.id)}for(const a of L.add)ids.add(a.id);return ids}
 function townMake(seed,opt){let P=null,s=seed;if(opt&&opt.line){P=townLinePlan(TOWN_CAT,opt.part);P.bad=townCheck(P)}else for(let k=0;k<30;k++){P=townPlan(s,TOWN_CAT,opt);if(!P.fail&&!townCheck(P).length)break;s+=1000}P.L=twLayout(P);return P}
 function townReady(P,cb){const key='town#'+P.seed;
-  if(CITY.townKey!==key){FURNSET.b={};Object.assign(CITY,{ready:false,err:null,loading:false,prog:0,protos:{},blds:{},meta:{},mats:{},tex:{},base:'city/+city2/+city5/+city7/+city4/+city6/',man:null,libNames:null,libs:{},townKey:key});CITY.only=townIds(P,P.L);CITY.extra={'city4/':P.L.names,'city6/':P.L.wnames}}
+  if(CITY.townKey!==key){if(typeof cityPurge==='function')cityPurge();FURNSET.b={};Object.assign(CITY,{ready:false,err:null,loading:false,prog:0,protos:{},blds:{},meta:{},mats:{},tex:{},base:'city/+city2/+city5/+city7/+city4/+city6/',man:null,libNames:null,libs:{},townKey:key});CITY.only=townIds(P,P.L);CITY.extra={'city4/':P.L.names,'city6/':P.L.wnames}}
   if(CITY.ready&&TW.libData){cb();return}cityLoad();twLib().then(d=>{TW.libData=d});
   if(CITY.err){$('loading').textContent='街のデータの読み込みに失敗しました：'+CITY.err.message;return}
   $('loading').textContent='街を読み込み中… '+Math.round(CITY.prog*100)+'%';setTimeout(()=>townReady(P,cb),250)}
@@ -6960,7 +6987,7 @@ function garLights(w){if(typeof CITY==='undefined'||!CITY.uIn)return;const c=w&&
 function garNames(){return[...new Set(garForest().place.map(p=>p[0]))]}
 // 読み込み：ガレージ（city9）と、森の木（city4 の小物）。街と同じ仕組み（townReady）で、要る物だけ読む
 function garageReady(cb,onErr){const key='garage';
-  if(CITY.townKey!==key){FURNSET.b={};Object.assign(CITY,{ready:false,err:null,loading:false,prog:0,protos:{},blds:{},meta:{},mats:{},tex:{},base:'city9/+city4/',man:null,libNames:null,libs:{},townKey:key});CITY.only=new Set(['garage']);CITY.extra={'city4/':garNames()}}
+  if(CITY.townKey!==key){if(typeof cityPurge==='function')cityPurge();FURNSET.b={};Object.assign(CITY,{ready:false,err:null,loading:false,prog:0,protos:{},blds:{},meta:{},mats:{},tex:{},base:'city9/+city4/',man:null,libNames:null,libs:{},townKey:key});CITY.only=new Set(['garage']);CITY.extra={'city4/':garNames()}}
   if(CITY.ready&&TW.libData){cb();return}cityLoad();twLib().then(d=>{TW.libData=d});
   if(CITY.err){if(onErr){onErr(CITY.err);return}$('loading').textContent='ガレージのデータの読み込みに失敗しました：'+CITY.err.message;return}
   $('loading').textContent='ガレージを読み込み中… '+Math.round(CITY.prog*100)+'%';setTimeout(()=>garageReady(cb,onErr),250)}
